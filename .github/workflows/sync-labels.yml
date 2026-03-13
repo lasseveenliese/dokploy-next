@@ -1,0 +1,108 @@
+name: Sync labels
+
+# Keep repo labels aligned with .github/labels.json.
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/labels.json'
+      - '.github/workflows/sync-labels.yml'
+
+# Minimum permissions to manage labels.
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  sync:
+    # Create or update labels based on labels.json.
+    runs-on: ubuntu-latest
+    steps:
+      # Fetch repository contents.
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      # Apply the label definitions using the GitHub API.
+      - name: Create/update labels
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const fs = require("fs");
+
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+
+            const cfgPath = ".github/labels.json";
+            if (!fs.existsSync(cfgPath)) {
+              core.setFailed(`Missing ${cfgPath}`);
+              return;
+            }
+
+            const cfg = JSON.parse(fs.readFileSync(cfgPath, "utf8"));
+            const desired = cfg.labels || [];
+            const deleteUnmanaged = Boolean(cfg.deleteUnmanaged);
+
+            // Load existing labels (paginated)
+            const existing = await github.paginate(
+              github.rest.issues.listLabelsForRepo,
+              { owner, repo, per_page: 100 }
+            );
+
+            const existingByName = new Map(existing.map(l => [l.name, l]));
+            const desiredNames = new Set(desired.map(l => l.name));
+
+            // Create or update
+            for (const label of desired) {
+              const name = label.name;
+              const color = (label.color || "").replace(/^#/, "").toLowerCase();
+              const description = label.description ?? "";
+
+              if (!name || !/^[0-9a-f]{6}$/.test(color)) {
+                core.setFailed(`Invalid label entry: ${JSON.stringify(label)}`);
+                return;
+              }
+
+              const current = existingByName.get(name);
+
+              if (!current) {
+                await github.rest.issues.createLabel({
+                  owner, repo,
+                  name,
+                  color,
+                  description
+                });
+                core.info(`Created label: ${name}`);
+              } else {
+                const needsUpdate =
+                  (current.color || "").toLowerCase() !== color ||
+                  (current.description || "") !== description;
+
+                if (needsUpdate) {
+                  await github.rest.issues.updateLabel({
+                    owner, repo,
+                    label_name: name,
+                    name,
+                    color,
+                    description
+                  });
+                  core.info(`Updated label: ${name}`);
+                } else {
+                  core.info(`OK: ${name}`);
+                }
+              }
+            }
+
+            // Optionally delete unmanaged labels
+            if (deleteUnmanaged) {
+              for (const l of existing) {
+                if (!desiredNames.has(l.name)) {
+                  await github.rest.issues.deleteLabel({
+                    owner, repo,
+                    name: l.name
+                  });
+                  core.info(`Deleted unmanaged label: ${l.name}`);
+                }
+              }
+            }

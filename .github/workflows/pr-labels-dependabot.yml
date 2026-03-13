@@ -1,0 +1,136 @@
+name: PR labels (Dependabot)
+
+# Label Dependabot pull requests based on update metadata.
+on:
+  workflow_call:
+    secrets:
+      DEPENDABOT_LABEL_TOKEN:
+        required: false
+
+# Minimum permissions to update PR labels.
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+jobs:
+  label_dependabot:
+    name: Label Dependabot PR
+    if: github.event.pull_request.user.login == 'dependabot[bot]'
+    runs-on: ubuntu-latest
+
+    steps:
+      # Fetch Dependabot metadata to classify the update.
+      - name: Fetch Dependabot metadata
+        id: metadata
+        uses: dependabot/fetch-metadata@v2
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      # Apply labels defined in labels.json based on metadata.
+      - name: Apply labels from labels.json
+        uses: actions/github-script@v8
+        env:
+          UPDATE_TYPE: ${{ steps.metadata.outputs.update-type }}
+          PACKAGE_ECOSYSTEM: ${{ steps.metadata.outputs.package-ecosystem }}
+          IS_SECURITY_UPDATE: ${{ steps.metadata.outputs.is-security-update }}
+        with:
+          github-token: ${{ secrets.DEPENDABOT_LABEL_TOKEN || secrets.GITHUB_TOKEN }}
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const prNumber = context.payload.pull_request.number;
+
+            const file = await github.rest.repos.getContent({
+              owner,
+              repo,
+              path: ".github/labels.json",
+              ref: context.payload.pull_request.base.sha,
+            });
+
+            if (!("content" in file.data)) {
+              core.setFailed("labels.json content missing.");
+              return;
+            }
+
+            const raw = Buffer.from(file.data.content, file.data.encoding).toString("utf8");
+            let config;
+            try {
+              config = JSON.parse(raw);
+            } catch (error) {
+              core.setFailed(`Invalid labels.json: ${error.message}`);
+              return;
+            }
+
+            const availableLabels = new Set((config.labels || []).map((label) => label.name));
+            const managedLabels = new Set(
+              [
+                "dependencies",
+                "security",
+                "version",
+                "major",
+                "minor",
+                "patch",
+                "docker",
+                "github_actions",
+                "javascript",
+                "npm",
+              ].filter((name) => availableLabels.has(name)),
+            );
+
+            const desiredLabels = new Set();
+            const addLabel = (name) => {
+              if (availableLabels.has(name)) desiredLabels.add(name);
+            };
+
+            addLabel("dependencies");
+
+            const updateType = process.env.UPDATE_TYPE || "";
+            const ecosystem = (process.env.PACKAGE_ECOSYSTEM || "").trim().toLowerCase();
+            const isSecurity =
+              (process.env.IS_SECURITY_UPDATE || "").toLowerCase() === "true" ||
+              updateType === "security-update";
+
+            if (isSecurity) {
+              addLabel("security");
+            } else {
+              addLabel("version");
+            }
+
+            if (updateType.includes("semver-major")) addLabel("major");
+            if (updateType.includes("semver-minor")) addLabel("minor");
+            if (updateType.includes("semver-patch")) addLabel("patch");
+
+            if (["github-actions", "github_actions"].includes(ecosystem)) {
+              addLabel("github_actions");
+            }
+
+            if (["npm", "npm_and_yarn", "npm-and-yarn"].includes(ecosystem)) {
+              addLabel("npm");
+            }
+
+            if (["docker", "docker-compose", "docker_compose"].includes(ecosystem)) {
+              addLabel("docker");
+            }
+
+            const { data: currentLabels } = await github.rest.issues.listLabelsOnIssue({
+              owner,
+              repo,
+              issue_number: prNumber,
+              per_page: 100,
+            });
+
+            const keepLabels = currentLabels
+              .map((label) => label.name)
+              .filter((name) => !managedLabels.has(name));
+
+            const finalLabels = Array.from(new Set([...keepLabels, ...desiredLabels]));
+
+            await github.rest.issues.setLabels({
+              owner,
+              repo,
+              issue_number: prNumber,
+              labels: finalLabels,
+            });
+
+            core.info(`Applied labels: ${finalLabels.join(", ")}`);

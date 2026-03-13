@@ -1,0 +1,71 @@
+version: 2
+updates:
+  - package-ecosystem: 'github-actions'
+    directory: '/'
+    schedule:
+      interval: 'weekly'
+      day: 'monday'
+      time: '06:00'
+      timezone: 'Europe/Berlin'
+    groups:
+      github-actions-minor-patch:
+        # applies-to: version-updates
+        patterns: ['*']
+        update-types: ['minor', 'patch']
+      github-actions-major:
+        # applies-to: version-updates
+        patterns: ['*']
+        update-types: ['major']
+
+  - package-ecosystem: 'npm'
+    directory: '/'
+    schedule:
+      interval: 'weekly'
+      day: 'monday'
+      time: '06:00'
+      timezone: 'Europe/Berlin'
+    cooldown:
+      semver-major-days: 90
+    groups:
+      npm-minor-patch:
+        # applies-to: version-updates
+        patterns: ['*']
+        update-types: ['minor', 'patch']
+      npm-major:
+        # applies-to: version-updates
+        patterns: ['*']
+        update-types: ['major']
+
+  - package-ecosystem: 'docker'
+    directory: '/'
+    schedule:
+      interval: 'weekly'
+      day: 'monday'
+      time: '06:00'
+      timezone: 'Europe/Berlin'
+    groups:
+      docker-minor-patch:
+        # applies-to: version-updates
+        patterns: ['*']
+        update-types: ['minor', 'patch']
+      docker-major:
+        # applies-to: version-updates
+        patterns: ['*']
+        update-types: ['major']
+
+  - package-ecosystem: 'docker-compose'
+    directory: '/'
+    schedule:
+      interval: 'weekly'
+      day: 'monday'
+      time: '06:00'
+      timezone: 'Europe/Berlin'
+    groups:
+      docker-compose-minor-patch:
+        # applies-to: version-updates
+        patterns: ['*']
+        update-types: ['minor', 'patch']
+      docker-compose-major:
+        # applies-to: version-updates
+        patterns: ['*']
+        update-types: ['major']

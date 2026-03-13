@@ -1,0 +1,122 @@
+name: Dependabot auto-merge (patch)
+
+# Enable auto-merge only for Dependabot patch PRs after CI succeeds.
+on:
+  workflow_run:
+    workflows: ['CI']
+    types: [completed]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  enable_automerge:
+    name: Enable auto-merge for Dependabot patch PRs
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Enable auto-merge for patch updates
+        uses: actions/github-script@v8
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const run = context.payload.workflow_run;
+            const pullRequests = run.pull_requests || [];
+
+            if (pullRequests.length === 0) {
+              core.info("No pull request linked to this workflow run.");
+              return;
+            }
+
+            const { owner, repo } = context.repo;
+            const pullNumber = pullRequests[0].number;
+
+            const { data: pullRequest } = await github.rest.pulls.get({
+              owner,
+              repo,
+              pull_number: pullNumber,
+            });
+
+            if (pullRequest.user.login !== "dependabot[bot]") {
+              core.info(`PR #${pullNumber} is not a Dependabot PR.`);
+              return;
+            }
+
+            if (pullRequest.state !== "open") {
+              core.info(`PR #${pullNumber} is not open.`);
+              return;
+            }
+
+            if (pullRequest.draft) {
+              core.info(`PR #${pullNumber} is a draft PR.`);
+              return;
+            }
+
+            const labelNames = new Set((pullRequest.labels || []).map((label) => label.name));
+            const isPatchUpdate = labelNames.has("patch");
+            const isMinorOrMajor = labelNames.has("minor") || labelNames.has("major");
+
+            if (!isPatchUpdate || isMinorOrMajor) {
+              core.info(`PR #${pullNumber} is not a patch version update.`);
+              return;
+            }
+
+            const mergePullRequest = async () =>
+              github.rest.pulls.merge({
+                owner,
+                repo,
+                pull_number: pullNumber,
+                merge_method: "squash",
+              });
+
+            const enablePullRequestAutoMerge = async () =>
+              github.graphql(
+                `
+                  mutation($pullRequestId: ID!) {
+                    enablePullRequestAutoMerge(
+                      input: { pullRequestId: $pullRequestId, mergeMethod: SQUASH }
+                    ) {
+                      pullRequest {
+                        number
+                      }
+                    }
+                  }
+                `,
+                { pullRequestId: pullRequest.node_id },
+              );
+
+            try {
+              const mergeResponse = await mergePullRequest();
+              if (mergeResponse.data.merged) {
+                core.info(`Merged PR #${pullNumber} directly.`);
+                return;
+              }
+              core.info(`Direct merge was not completed for PR #${pullNumber}.`);
+            } catch (mergeError) {
+              core.info(`Direct merge failed for PR #${pullNumber}: ${mergeError.message}`);
+            }
+
+            try {
+              await enablePullRequestAutoMerge();
+              core.info(`Enabled auto-merge for PR #${pullNumber}.`);
+            } catch (autoMergeError) {
+              const message = autoMergeError.message || "";
+
+              if (message.includes("already enabled")) {
+                core.info(`Auto-merge is already enabled for PR #${pullNumber}.`);
+                return;
+              }
+
+              if (message.includes("clean status")) {
+                const retryMergeResponse = await mergePullRequest();
+                if (retryMergeResponse.data.merged) {
+                  core.info(`Merged PR #${pullNumber} after clean-status response.`);
+                  return;
+                }
+              }
+
+              throw autoMergeError;
+            }

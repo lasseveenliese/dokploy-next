@@ -1,0 +1,80 @@
+{
+  "deleteUnmanaged": false,
+  "labels": [
+    {
+      "name": "dependencies",
+      "tw-color": "blue-600",
+      "color": "155dfc",
+      "description": "Pull requests that update a dependency file"
+    },
+    {
+      "name": "ci-workflows",
+      "tw-color": "blue-600",
+      "color": "155dfc",
+      "description": "Automated workflow issues"
+    },
+    {
+      "name": "ci-security",
+      "tw-color": "rose-800",
+      "color": "a50036",
+      "description": "Security workflow issues"
+    },
+
+    {
+      "name": "security",
+      "tw-color": "rose-800",
+      "color": "a50036",
+      "description": "Security updates"
+    },
+    {
+      "name": "version",
+      "tw-color": "teal-800",
+      "color": "005f5a",
+      "description": "Version updates"
+    },
+
+    {
+      "name": "docker",
+      "tw-color": "purple-600",
+      "color": "9810fa",
+      "description": "Docker-related"
+    },
+    {
+      "name": "github_actions",
+      "tw-color": "purple-600",
+      "color": "9810fa",
+      "description": "GitHub-Actions-related"
+    },
+    {
+      "name": "javascript",
+      "tw-color": "purple-600",
+      "color": "9810fa",
+      "description": "JavaScript-related"
+    },
+    { "name": "npm", "tw-color": "purple-600", "color": "9810fa", "description": "npm-related" },
+    {
+      "name": "major",
+      "tw-color": "red-600",
+      "color": "e7000b",
+      "description": "SemVer major update"
+    },
+    {
+      "name": "minor",
+      "tw-color": "yellow-400",
+      "color": "fcc800",
+      "description": "SemVer minor update"
+    },
+    {
+      "name": "patch",
+      "tw-color": "green-600",
+      "color": "00a63e",
+      "description": "SemVer patch update"
+    },
+    {
+      "name": "ready to merge",
+      "tw-color": "custom",
+      "color": "7fee4c",
+      "description": "PR can be merged"
+    }
+  ]
+}

@@ -1,0 +1,396 @@
+name: CI
+
+# Run checks for pull requests and main branch updates.
+on:
+  pull_request:
+    types: [opened, reopened, synchronize]
+
+# Minimum permissions for read-only jobs by default.
+permissions:
+  contents: read
+
+# Avoid overlapping CI runs for the same ref.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ci:
+    name: CI
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
+    steps:
+      # Fetch repository contents.
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      # Label non-Dependabot PRs based on changed files.
+      - name: Apply PR labels (manual rules)
+        if: github.event_name == 'pull_request' && github.event.pull_request.user.login != 'dependabot[bot]'
+        uses: actions/github-script@v8
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const prNumber = context.payload.pull_request.number;
+
+            const file = await github.rest.repos.getContent({
+              owner,
+              repo,
+              path: ".github/labels.json",
+              ref: context.payload.pull_request.base.sha,
+            });
+
+            if (!("content" in file.data)) {
+              core.setFailed("labels.json content missing.");
+              return;
+            }
+
+            const raw = Buffer.from(file.data.content, file.data.encoding).toString("utf8");
+            let config;
+            try {
+              config = JSON.parse(raw);
+            } catch (error) {
+              core.setFailed(`Invalid labels.json: ${error.message}`);
+              return;
+            }
+
+            const availableLabels = new Set((config.labels || []).map((label) => label.name));
+            const managedLabels = new Set(
+              ["docker", "github_actions", "npm"].filter((name) => availableLabels.has(name)),
+            );
+
+            const desiredLabels = new Set();
+            const addLabel = (name) => {
+              if (availableLabels.has(name)) desiredLabels.add(name);
+            };
+
+            const files = await github.paginate(github.rest.pulls.listFiles, {
+              owner,
+              repo,
+              pull_number: prNumber,
+              per_page: 100,
+            });
+
+            const filenames = files.map((file) => file.filename);
+
+            const matches = (pattern) => filenames.some((name) => pattern.test(name));
+
+            if (
+              matches(/(^|\/)Dockerfile(\..+)?$/) ||
+              matches(/(^|\/)docker-compose\.ya?ml$/)
+            ) {
+              addLabel("docker");
+            }
+
+            if (filenames.some((name) => name.startsWith(".github/workflows/"))) {
+              addLabel("github_actions");
+            }
+
+            if (matches(/(^|\/)package(-lock)?\.json$/)) {
+              addLabel("npm");
+            }
+
+            const { data: currentLabels } = await github.rest.issues.listLabelsOnIssue({
+              owner,
+              repo,
+              issue_number: prNumber,
+              per_page: 100,
+            });
+
+            const keepLabels = currentLabels
+              .map((label) => label.name)
+              .filter((name) => !managedLabels.has(name));
+
+            const finalLabels = Array.from(new Set([...keepLabels, ...desiredLabels]));
+
+            await github.rest.issues.setLabels({
+              owner,
+              repo,
+              issue_number: prNumber,
+              labels: finalLabels,
+            });
+
+            core.info(`Applied labels: ${finalLabels.join(", ")}`);
+
+      # Fetch Dependabot metadata to classify the update.
+      - name: Fetch Dependabot metadata
+        if: github.event_name == 'pull_request' && github.event.pull_request.user.login == 'dependabot[bot]'
+        id: metadata
+        uses: dependabot/fetch-metadata@v2
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      # Label Dependabot PRs based on update metadata.
+      - name: Apply PR labels (Dependabot)
+        if: github.event_name == 'pull_request' && github.event.pull_request.user.login == 'dependabot[bot]'
+        uses: actions/github-script@v8
+        env:
+          UPDATE_TYPE: ${{ steps.metadata.outputs.update-type }}
+          PACKAGE_ECOSYSTEM: ${{ steps.metadata.outputs.package-ecosystem }}
+          IS_SECURITY_UPDATE: ${{ steps.metadata.outputs.is-security-update }}
+        with:
+          github-token: ${{ secrets.DEPENDABOT_LABEL_TOKEN || secrets.GITHUB_TOKEN }}
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const prNumber = context.payload.pull_request.number;
+
+            const file = await github.rest.repos.getContent({
+              owner,
+              repo,
+              path: ".github/labels.json",
+              ref: context.payload.pull_request.base.sha,
+            });
+
+            if (!("content" in file.data)) {
+              core.setFailed("labels.json content missing.");
+              return;
+            }
+
+            const raw = Buffer.from(file.data.content, file.data.encoding).toString("utf8");
+            let config;
+            try {
+              config = JSON.parse(raw);
+            } catch (error) {
+              core.setFailed(`Invalid labels.json: ${error.message}`);
+              return;
+            }
+
+            const availableLabels = new Set((config.labels || []).map((label) => label.name));
+            const managedLabels = new Set(
+              [
+                "dependencies",
+                "security",
+                "version",
+                "major",
+                "minor",
+                "patch",
+                "docker",
+                "github_actions",
+                "javascript",
+                "npm",
+              ].filter((name) => availableLabels.has(name)),
+            );
+
+            const desiredLabels = new Set();
+            const addLabel = (name) => {
+              if (availableLabels.has(name)) desiredLabels.add(name);
+            };
+
+            addLabel("dependencies");
+
+            const updateType = process.env.UPDATE_TYPE || "";
+            const ecosystem = (process.env.PACKAGE_ECOSYSTEM || "").trim().toLowerCase();
+            const isSecurity =
+              (process.env.IS_SECURITY_UPDATE || "").toLowerCase() === "true" ||
+              updateType === "security-update";
+
+            if (isSecurity) {
+              addLabel("security");
+            } else {
+              addLabel("version");
+            }
+
+            if (updateType.includes("semver-major")) addLabel("major");
+            if (updateType.includes("semver-minor")) addLabel("minor");
+            if (updateType.includes("semver-patch")) addLabel("patch");
+
+            if (["github-actions", "github_actions"].includes(ecosystem)) {
+              addLabel("github_actions");
+            }
+
+            if (["npm", "npm_and_yarn", "npm-and-yarn"].includes(ecosystem)) {
+              addLabel("npm");
+            }
+
+            if (["docker", "docker-compose", "docker_compose"].includes(ecosystem)) {
+              addLabel("docker");
+            }
+
+            const { data: currentLabels } = await github.rest.issues.listLabelsOnIssue({
+              owner,
+              repo,
+              issue_number: prNumber,
+              per_page: 100,
+            });
+
+            const keepLabels = currentLabels
+              .map((label) => label.name)
+              .filter((name) => !managedLabels.has(name));
+
+            const finalLabels = Array.from(new Set([...keepLabels, ...desiredLabels]));
+
+            await github.rest.issues.setLabels({
+              owner,
+              repo,
+              issue_number: prNumber,
+              labels: finalLabels,
+            });
+
+            core.info(`Applied labels: ${finalLabels.join(", ")}`);
+
+      # Configure Node.js with npm caching.
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+
+      # Install dependencies from package-lock.json.
+      - name: Install dependencies
+        run: npm ci
+
+      # Prepare log directory for check outputs.
+      - name: Prepare CI logs
+        run: mkdir -p .ci-logs
+
+      # Verify formatting.
+      - name: Format
+        id: format
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          npm run format:check 2>&1 | tee .ci-logs/format.log
+
+      # Run ESLint checks.
+      - name: Lint
+        id: lint
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          npm run lint 2>&1 | tee .ci-logs/lint.log
+
+      # Type-check the codebase.
+      - name: Typecheck
+        id: typecheck
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          npm run typecheck 2>&1 | tee .ci-logs/typecheck.log
+
+      # Build the Next.js app.
+      - name: Build
+        id: build
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          npm run build 2>&1 | tee .ci-logs/build.log
+
+      # Comment on PRs with per-check status and failure reasons.
+      - name: Update PR comments (checks)
+        if: always() && github.event_name == 'pull_request'
+        uses: actions/github-script@v8
+        env:
+          FORMAT_OUTCOME: ${{ steps.format.outcome }}
+          LINT_OUTCOME: ${{ steps.lint.outcome }}
+          TYPECHECK_OUTCOME: ${{ steps.typecheck.outcome }}
+          BUILD_OUTCOME: ${{ steps.build.outcome }}
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const fs = require("fs");
+            const path = require("path");
+
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const prNumber = context.payload.pull_request.number;
+
+            const checks = [
+              { id: "format", name: "Format", log: ".ci-logs/format.log", outcome: process.env.FORMAT_OUTCOME },
+              { id: "lint", name: "Lint", log: ".ci-logs/lint.log", outcome: process.env.LINT_OUTCOME },
+              { id: "typecheck", name: "Typecheck", log: ".ci-logs/typecheck.log", outcome: process.env.TYPECHECK_OUTCOME },
+              { id: "build", name: "Build", log: ".ci-logs/build.log", outcome: process.env.BUILD_OUTCOME },
+            ];
+
+            const statusMeta = (outcome) => {
+              if (outcome === "failure") return { icon: "❌ FAIL", label: "FAIL" };
+              if (outcome === "skipped") return { icon: "⏭️ SKIP", label: "SKIP" };
+              if (outcome === "cancelled") return { icon: "⏭️ SKIP", label: "SKIP" };
+              return { icon: "✅ PASS", label: "PASS" };
+            };
+
+            const readTail = (filePath, maxLines = 24, maxChars = 3800) => {
+              if (!fs.existsSync(filePath)) return null;
+              const raw = fs.readFileSync(filePath, "utf8").trimEnd();
+              if (!raw) return "(keine Ausgabe)";
+              const lines = raw.split(/\r?\n/);
+              let tail = lines.slice(-maxLines).join("\n");
+              if (tail.length > maxChars) {
+                tail = tail.slice(tail.length - maxChars);
+              }
+              return tail;
+            };
+
+            const { data: comments } = await github.rest.issues.listComments({
+              owner,
+              repo,
+              issue_number: prNumber,
+              per_page: 100,
+            });
+
+            for (const check of checks) {
+              const marker = `<!-- ci-check:${check.id} -->`;
+              const existing = comments.find((comment) => (comment.body || "").includes(marker));
+              const { icon } = statusMeta(check.outcome);
+
+              const isFailure = check.outcome === "failure";
+              const shouldUpdate = Boolean(existing) || isFailure;
+
+              if (!shouldUpdate) continue;
+
+              const logPath = path.resolve(process.cwd(), check.log);
+              const tail = readTail(logPath);
+
+              let body = `${marker}\n${icon} ${check.name}\n`;
+
+              if (check.outcome === "failure") {
+                body += "\nWarum fehlgeschlagen:\n";
+                if (tail) {
+                  body += `\n\`\`\`\n${tail}\n\`\`\`\n`;
+                } else {
+                  body += "\nKeine Log-Ausgabe gefunden.\n";
+                }
+              } else if (check.outcome === "skipped" || check.outcome === "cancelled") {
+                body += "\nDieser Schritt wurde übersprungen.\n";
+              } else {
+                body += "\nLetzter Lauf erfolgreich.\n";
+              }
+
+              if (existing) {
+                await github.rest.issues.updateComment({
+                  owner,
+                  repo,
+                  comment_id: existing.id,
+                  body,
+                });
+              } else {
+                await github.rest.issues.createComment({
+                  owner,
+                  repo,
+                  issue_number: prNumber,
+                  body,
+                });
+              }
+            }
+
+      # Ensure the job fails if any check failed.
+      - name: Fail if checks failed
+        if: always()
+        run: |
+          failed=0
+          for outcome in "${{ steps.format.outcome }}" "${{ steps.lint.outcome }}" "${{ steps.typecheck.outcome }}" "${{ steps.build.outcome }}"; do
+            if [ "$outcome" = "failure" ]; then
+              failed=1
+            fi
+          done
+          if [ "$failed" -ne 0 ]; then
+            echo "One or more checks failed."
+            exit 1
+          fi
